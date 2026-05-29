@@ -798,6 +798,8 @@ Sois précis, actionnable et ancré dans les meilleures pratiques du secteur HLM
 function ViewConfig({ dossier, onSave }) {
   const [form, setForm] = useState(dossier);
   const [activeTheme, setActiveTheme] = useState(0);
+  const [enrichLoading, setEnrichLoading] = useState(false);
+  const [enrichResult, setEnrichResult] = useState(null);
   const setF = function(k,val){setForm(function(f){return Object.assign({},f,{[k]:val});});};
   const setKpi = function(id,val){setForm(function(f){return Object.assign({},f,{kpiValues:Object.assign({},f.kpiValues,{[id]:val})});});};
   const totalKpis = BANQUE_KPIS.reduce(function(a,t){return a+t.kpis.length;},0);
@@ -805,6 +807,152 @@ function ViewConfig({ dossier, onSave }) {
   const t = BANQUE_KPIS[activeTheme];
   const tcol = THEME_COLORS[t.theme]||C.gray;
   const isRes = dossier.type==="residence";
+
+  async function handleEnrichir() {
+    if (!form.adresse) return;
+    setEnrichLoading(true);
+    setEnrichResult(null);
+    try {
+      const res = await enrichirDepuisAPIs(form.adresse);
+      const kpiKeys = Object.keys(res).filter(function(k){return !k.startsWith("_meta");});
+      const metaKeys = Object.keys(res).filter(function(k){return k.startsWith("_meta");});
+      // Appliquer les KPIs enrichis
+      let newKpiValues = Object.assign({}, form.kpiValues);
+      kpiKeys.forEach(function(id) {
+        newKpiValues[id] = res[id].valeur;
+      });
+      setForm(function(f){return Object.assign({},f,{kpiValues:newKpiValues,enrichissementPublic:res});});
+      setEnrichResult({ kpiCount: kpiKeys.length, metaCount: metaKeys.length, meta: metaKeys.map(function(k){return res[k];}) });
+    } catch(e) {
+      setEnrichResult({ error: "Erreur lors de l'enrichissement : " + e.message });
+    }
+    setEnrichLoading(false);
+  }
+
+  return (
+    <div>
+      <h2 style={{fontSize:16,fontWeight:500,marginBottom:4}}>Configuration — {dossier.nom}</h2>
+      <p style={{fontSize:12,color:"#888",marginBottom:20}}>{isRes?"Vue locale résidence":"Vue globale bailleur"}</p>
+      <div style={{padding:16,borderRadius:12,border:"0.5px solid rgba(128,128,128,0.2)",marginBottom:20}}>
+        <div style={{fontSize:13,fontWeight:500,marginBottom:12,color:C.coral}}>Informations générales</div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+          {[["totalLogements",isRes?"Nb logements résidence":"Nb total logements","number","Ex: 120"],["nbLocataires75","Nb locataires 75+","number","Ex: 18"],["pctSeniors75","% occupés 75+","number","Ex: 15"],["tauxRotation","Taux rotation (%)","number","Ex: 5.2"],["responsablePilotage","Responsable pilotage","text","Nom + fonction"],["dateDebut","Date de début","date",""]].map(function(f){return(
+            <div key={f[0]}>
+              <label style={{fontSize:11,color:"#888",display:"block",marginBottom:3,textTransform:"uppercase",letterSpacing:"0.04em"}}>{f[1]}</label>
+              <input type={f[2]} value={form[f[0]]||""} onChange={function(e){setF(f[0],e.target.value);}} placeholder={f[3]} style={{width:"100%",fontSize:13,padding:"7px 10px",border:"0.5px solid rgba(128,128,128,0.3)",borderRadius:8,background:"transparent",color:"inherit",boxSizing:"border-box"}}/>
+            </div>
+          );})}
+        </div>
+
+        {/* Géolocalisation */}
+        <div style={{marginTop:14}}>
+          <label style={{fontSize:11,color:"#888",display:"block",marginBottom:6,textTransform:"uppercase",letterSpacing:"0.04em"}}>
+            📍 {isRes?"Adresse de la résidence":"Adresse du siège"}
+          </label>
+          <AddressField value={form.adresse} onSelect={function(addr){setF("adresse",addr);}} placeholder={isRes?"12 rue des Lilas, Lyon…":"15 avenue de la République, Paris…"}/>
+          {form.adresse && (
+            <div style={{marginTop:8}}>
+              <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:10}}>
+                {[{label:"Commune",val:form.adresse.city},{label:"Code INSEE",val:form.adresse.citycode},{label:"Département",val:form.adresse.departement},{label:"Région",val:form.adresse.region}].map(function(item){return(
+                  <div key={item.label} style={{padding:"4px 10px",borderRadius:6,background:`${C.teal}12`,border:`0.5px solid ${C.teal}30`}}>
+                    <span style={{fontSize:10,color:"#888"}}>{item.label}: </span>
+                    <span style={{fontSize:11,fontWeight:500,color:C.teal}}>{item.val}</span>
+                  </div>
+                );}) }
+              </div>
+
+              {/* Bouton enrichissement */}
+              <div style={{padding:14,borderRadius:10,border:`0.5px solid ${C.purple}40`,background:`${C.purple}05`}}>
+                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
+                  <div>
+                    <div style={{fontSize:12,fontWeight:500,color:C.purple,marginBottom:2}}>🌐 Enrichissement depuis les données publiques</div>
+                    <div style={{fontSize:11,color:"#888"}}>INSEE · ADEME DPE · BPE · Géorisques · RPLS · Filosofi</div>
+                  </div>
+                  <button onClick={handleEnrichir} disabled={enrichLoading}
+                    style={{padding:"8px 16px",borderRadius:20,border:"none",background:enrichLoading?"#ccc":C.purple,color:"#fff",fontSize:12,fontWeight:500,cursor:enrichLoading?"default":"pointer",whiteSpace:"nowrap"}}>
+                    {enrichLoading?"⟳ Chargement…":"🌐 Enrichir automatiquement"}
+                  </button>
+                </div>
+
+                {enrichResult && !enrichResult.error && (
+                  <div style={{marginTop:8}}>
+                    <div style={{fontSize:11,color:C.teal,fontWeight:500,marginBottom:6}}>
+                      ✓ {enrichResult.kpiCount} KPI(s) pré-rempli(s) depuis les données publiques
+                    </div>
+                    {enrichResult.meta && enrichResult.meta.length > 0 && (
+                      <div style={{display:"flex",flexDirection:"column",gap:4}}>
+                        {enrichResult.meta.map(function(m,i){return(
+                          <div key={i} style={{fontSize:10,padding:"4px 8px",borderRadius:6,background:"rgba(128,128,128,0.06)",color:"#888"}}>
+                            📊 {m.valeur} <span style={{color:"#aaa"}}>— {m.source}</span>
+                          </div>
+                        );}) }
+                      </div>
+                    )}
+                  </div>
+                )}
+                {enrichResult && enrichResult.error && (
+                  <div style={{fontSize:11,color:C.red,marginTop:6}}>⚠ {enrichResult.error}</div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Banque KPIs */}
+      <div style={{padding:16,borderRadius:12,border:"0.5px solid rgba(128,128,128,0.2)",marginBottom:20}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+          <div style={{fontSize:13,fontWeight:500,color:C.teal}}>Banque d'indicateurs</div>
+          <div style={{display:"flex",gap:12,alignItems:"center"}}>
+            {form.enrichissementPublic && <span style={{fontSize:11,color:C.purple}}>🌐 {Object.keys(form.enrichissementPublic).filter(function(k){return !k.startsWith("_meta");}).length} depuis données publiques</span>}
+            <span style={{fontSize:11,color:"#888"}}>{saisieCount}/{totalKpis} renseignés</span>
+          </div>
+        </div>
+        <div style={{height:4,borderRadius:2,background:"rgba(128,128,128,0.15)",marginBottom:12,overflow:"hidden"}}>
+          <div style={{width:`${(saisieCount/totalKpis)*100}%`,height:"100%",background:C.teal}}/>
+        </div>
+        <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:12}}>
+          {BANQUE_KPIS.map(function(th,i){
+            const filled=th.kpis.filter(function(k){return form.kpiValues&&form.kpiValues[k.id]!==undefined&&form.kpiValues[k.id]!=="";}).length;
+            const col=THEME_COLORS[th.theme]||C.gray;
+            return<button key={i} onClick={function(){setActiveTheme(i);}} style={{fontSize:11,padding:"3px 9px",borderRadius:20,border:`0.5px solid ${activeTheme===i?col:"rgba(128,128,128,0.25)"}`,background:activeTheme===i?`${col}18`:"transparent",color:activeTheme===i?col:"#888",cursor:"pointer"}}>{th.theme} ({filled}/{th.kpis.length})</button>;
+          })}
+        </div>
+        <div style={{fontSize:10,color:"#888",textTransform:"uppercase",letterSpacing:"0.04em",display:"grid",gridTemplateColumns:"2fr 0.8fr 0.4fr 0.6fr 1.2fr",gap:6,padding:"0 10px 6px",borderBottom:"0.5px solid rgba(128,128,128,0.1)"}}>
+          <span>Indicateur</span><span>Formule</span><span>Unité</span><span>Valeur</span><span>Benchmark / Source</span>
+        </div>
+        {t.kpis.map(function(kpi){
+          const val=form.kpiValues&&form.kpiValues[kpi.id]||"";
+          const hasVal=val!=="";
+          const b=BENCHMARKS[kpi.id];
+          const isPublic=form.enrichissementPublic&&form.enrichissementPublic[kpi.id];
+          return(
+            <div key={kpi.id} style={{display:"grid",gridTemplateColumns:"2fr 0.8fr 0.4fr 0.6fr 1.2fr",gap:6,padding:"8px 10px",borderBottom:"0.5px solid rgba(128,128,128,0.06)",alignItems:"center",background:isPublic?"rgba(83,74,183,0.03)":"transparent"}}>
+              <div>
+                <div style={{fontSize:12,fontWeight:500}}>{kpi.nom}</div>
+                <div style={{fontSize:10,color:"#aaa"}}>{kpi.lecture}</div>
+              </div>
+              <div style={{fontSize:10,color:"#888",lineHeight:1.3}}>{kpi.formule}</div>
+              <div style={{fontSize:11,color:tcol,fontWeight:500}}>{kpi.unite}</div>
+              <div style={{position:"relative"}}>
+                <input type="text" value={val} onChange={function(e){setKpi(kpi.id,e.target.value);}} placeholder="—"
+                  style={{fontSize:12,padding:"4px 8px",border:`0.5px solid ${hasVal?tcol:"rgba(128,128,128,0.25)"}`,borderRadius:6,background:hasVal?`${tcol}0D`:"transparent",color:"inherit",width:"100%",boxSizing:"border-box",textAlign:"right"}}/>
+                {isPublic&&<span style={{position:"absolute",top:-8,right:-4,fontSize:8,background:C.purple,color:"#fff",borderRadius:3,padding:"1px 3px"}}>🌐</span>}
+              </div>
+              <div style={{display:"flex",flexDirection:"column",gap:2}}>
+                {b&&<div style={{fontSize:10,color:"#888"}}>Nat: <strong>{b.national}{b.unite}</strong></div>}
+                {isPublic&&<div style={{fontSize:9,color:C.purple}}>🌐 {form.enrichissementPublic[kpi.id].source}</div>}
+                {!isPublic&&b&&<div style={{fontSize:9,color:"#aaa"}}>{b.source}</div>}
+                {hasVal&&<BenchmarkBadge kpiId={kpi.id} value={val}/>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <button onClick={function(){onSave(form);}} style={{padding:"10px 24px",borderRadius:20,border:"none",background:C.coral,color:"#fff",fontSize:13,fontWeight:500,cursor:"pointer"}}>Enregistrer ✓</button>
+    </div>
+  );
+}
 
   return (
     <div>
