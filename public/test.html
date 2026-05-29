@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html>
+<body>
+<button onclick="test()">Tester enrichissement</button>
+<pre id="result"></pre>
+<script>
+async function test() {
+  const r = await fetch("/.netlify/functions/enrichir", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ citycode: "37261", city: "Tours", lat: 47.394421, lon: 0.686311 })
+  });
+  const d = await r.json();
+  document.getElementById("result").textContent = JSON.stringify(d, null, 2);
+}
+</script>
+</body>
+</html>
