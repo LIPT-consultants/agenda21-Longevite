@@ -254,171 +254,25 @@ function uid() { return Date.now().toString(36) + Math.random().toString(36).sli
 // ══════════════════════════════════════════════════════════
 // MOTEUR D'ENRICHISSEMENT TERRITORIAL
 // ══════════════════════════════════════════════════════════
-
-// Résultats enrichissement : { kpiId: { valeur, source, niveau } }
 async function enrichirDepuisAPIs(adresse) {
   if (!adresse || !adresse.citycode) return {};
-  const results = {};
-  const codeInsee = adresse.citycode;
-  const lat = adresse.lat;
-  const lon = adresse.lon;
-
-  function set(id, val, source, niveau) {
-    if (val !== null && val !== undefined && !isNaN(parseFloat(val))) {
-      results[id] = { valeur: String(Math.round(parseFloat(val) * 10) / 10), source, niveau };
-    }
+  try {
+    const response = await fetch("/.netlify/functions/enrichir", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        citycode: adresse.citycode,
+        city: adresse.city,
+        lat: adresse.lat,
+        lon: adresse.lon,
+      }),
+    });
+    const data = await response.json();
+    return data || {};
+  } catch(e) {
+    console.error("Enrichissement:", e);
+    return {};
   }
-
-  // ── 1. INSEE Recensement (commune) ──────────────────────
-  try {
-    const urlPop = `https://api.insee.fr/donnees-locales/V0.1/donnees/geo-SEXE-AGE15_15_90@GEO2023RP2020/COM-${codeInsee}.all.all`;
-    const rPop = await fetch(urlPop, { headers: { Accept: "application/json" } });
-    if (rPop.ok) {
-      const dPop = await rPop.json();
-      // Extraction part 60+, 75+, 85+, personnes seules
-      if (dPop && dPop.Cellule) {
-        let total = 0, s60 = 0, s75 = 0, s85 = 0;
-        dPop.Cellule.forEach(function(c) {
-          const age = c.Modalite?.find(function(m) { return m["@variable"] === "AGE15_15_90"; });
-          const v = parseFloat(c.Valeur || 0);
-          if (age) {
-            total += v;
-            if (["60-74", "75-89", "90+"].includes(age["@code"])) s60 += v;
-            if (["75-89", "90+"].includes(age["@code"])) s75 += v;
-            if (age["@code"] === "90+") s85 += v;
-          }
-        });
-        if (total > 0) {
-          set("v1", (s60 / total * 100), "INSEE RP 2020 — commune", "commune");
-          set("v2", (s75 / total * 100), "INSEE RP 2020 — commune", "commune");
-          set("v3", (s85 / total * 100), "INSEE RP 2020 — commune", "commune");
-        }
-      }
-    }
-  } catch(e) { console.log("INSEE pop:", e.message); }
-
-  // ── 2. API Géo — informations territoire ────────────────
-  try {
-    const urlGeo = `https://geo.api.gouv.fr/communes/${codeInsee}?fields=nom,population,codesPostaux,codeDepartement,codeRegion,epci`;
-    const rGeo = await fetch(urlGeo);
-    if (rGeo.ok) {
-      const dGeo = await rGeo.json();
-      if (dGeo.population) {
-        results["_meta_population"] = { valeur: String(dGeo.population), source: "API Géo — commune", niveau: "commune" };
-      }
-      if (dGeo.epci) {
-        results["_meta_epci"] = { valeur: dGeo.epci, source: "API Géo", niveau: "epci" };
-      }
-    }
-  } catch(e) { console.log("API Géo:", e.message); }
-
-  // ── 3. ADEME DPE — classes énergétiques ─────────────────
-  try {
-    const urlDpe = `https://data.ademe.fr/data-fair/api/v1/datasets/dpe-v2-logements-existants/lines?size=1000&q=${encodeURIComponent(adresse.city)}&q_fields=nom_commune_ban&select=etiquette_dpe,periode_construction`;
-    const rDpe = await fetch(urlDpe);
-    if (rDpe.ok) {
-      const dDpe = await rDpe.json();
-      if (dDpe.results && dDpe.results.length > 0) {
-        let total = dDpe.results.length, efg = 0, renove = 0;
-        dDpe.results.forEach(function(r) {
-          const etiq = r.etiquette_dpe;
-          if (["E","F","G"].includes(etiq)) efg++;
-          if (["A","B","C"].includes(etiq)) renove++;
-        });
-        set("te1", (efg / total * 100), "ADEME Observatoire DPE 2025 — commune", "commune");
-        set("te2", (renove / total * 100), "ADEME Observatoire DPE 2025 — commune", "commune");
-      }
-    }
-  } catch(e) { console.log("ADEME DPE:", e.message); }
-
-  // ── 4. BPE — équipements médico-sociaux ─────────────────
-  try {
-    const urlBpe = `https://data.insee.fr/api/donnees-locales/V0.1/donnees/geo-TYPEQU@BPE2021/COM-${codeInsee}.all`;
-    const rBpe = await fetch(urlBpe, { headers: { Accept: "application/json" } });
-    if (rBpe.ok) {
-      const dBpe = await rBpe.json();
-      if (dBpe && dBpe.Cellule) {
-        let medecins = 0, infirmiers = 0, pharmacies = 0, ehpad = 0, services = 0;
-        dBpe.Cellule.forEach(function(c) {
-          const type = c.Modalite?.find(function(m) { return m["@variable"] === "TYPEQU"; });
-          const v = parseFloat(c.Valeur || 0);
-          if (!type) return;
-          const code = type["@code"];
-          if (code === "D201") medecins += v;
-          if (code === "D301") infirmiers += v;
-          if (code === "D401") pharmacies += v;
-          if (["D109","D110"].includes(code)) ehpad += v;
-          if (code === "D107") services += v;
-        });
-        const partenaires = Math.round((medecins > 0 ? 1 : 0) + (ehpad > 0 ? 1 : 0) + (services > 0 ? 2 : 0) + (pharmacies > 0 ? 1 : 0));
-        set("pt1", partenaires, "INSEE BPE 2021 — équipements médico-sociaux commune", "commune");
-        results["_meta_bpe"] = {
-          valeur: `${medecins} médecins, ${infirmiers} infirmiers, ${pharmacies} pharmacies, ${ehpad} EHPAD/résidences autonomie`,
-          source: "INSEE BPE 2021", niveau: "commune"
-        };
-      }
-    }
-  } catch(e) { console.log("BPE:", e.message); }
-
-  // ── 5. Géorisques ────────────────────────────────────────
-  try {
-    if (lat && lon) {
-      const urlGR = `https://georisques.gouv.fr/api/v1/exposition?latlon=${lon},${lat}`;
-      const rGR = await fetch(urlGR);
-      if (rGR.ok) {
-        const dGR = await rGR.json();
-        if (dGR) {
-          // Inondation
-          if (dGR.inondation) {
-            const niv = dGR.inondation.niveauAlea;
-            const score = niv === "Fort" ? 80 : niv === "Moyen" ? 50 : niv === "Faible" ? 25 : 0;
-            if (score > 0) set("te5", score, "Géorisques — exposition inondation", "adresse");
-          }
-          // Retrait-gonflement argiles
-          if (dGR.retraitGonflementArgiles) {
-            const exp = dGR.retraitGonflementArgiles.niveauAlea;
-            results["_meta_rga"] = { valeur: `Exposition argiles : ${exp || "Faible"}`, source: "Géorisques 2026", niveau: "adresse" };
-          }
-        }
-      }
-    }
-  } catch(e) { console.log("Géorisques:", e.message); }
-
-  // ── 6. RPLS — parc social ───────────────────────────────
-  try {
-    const urlRpls = `https://data.statistiques.developpement-durable.gouv.fr/ods/api/records/1.0/search/?dataset=rpls_routier&q=code_commune_proprietaire:${codeInsee}&rows=0&facet=categorie_proprietaire`;
-    const rRpls = await fetch(urlRpls);
-    if (rRpls.ok) {
-      const dRpls = await rRpls.json();
-      if (dRpls.nhits) {
-        results["_meta_rpls"] = { valeur: `${dRpls.nhits} logements sociaux recensés dans la commune`, source: "RPLS 2023 — data.gouv.fr", niveau: "commune" };
-      }
-    }
-  } catch(e) { console.log("RPLS:", e.message); }
-
-  // ── 7. Filosofi — revenus et pauvreté ───────────────────
-  try {
-    const urlFilo = `https://data.insee.fr/api/donnees-locales/V0.1/donnees/geo-INDIC@FILOSOFI2020/COM-${codeInsee}.all`;
-    const rFilo = await fetch(urlFilo, { headers: { Accept: "application/json" } });
-    if (rFilo.ok) {
-      const dFilo = await rFilo.json();
-      if (dFilo && dFilo.Cellule) {
-        dFilo.Cellule.forEach(function(c) {
-          const indic = c.Modalite?.find(function(m) { return m["@variable"] === "INDIC"; });
-          if (!indic) return;
-          const val = parseFloat(c.Valeur);
-          if (indic["@code"] === "TP60" && !isNaN(val)) {
-            set("v14", val / 100 * 0.35, "INSEE Filosofi 2020 — taux pauvreté commune (proxy taux d'effort)", "commune");
-          }
-          if (indic["@code"] === "MED21" && !isNaN(val)) {
-            results["_meta_revenu_median"] = { valeur: `${Math.round(val)} €/an`, source: "INSEE Filosofi 2020 — revenu médian", niveau: "commune" };
-          }
-        });
-      }
-    }
-  } catch(e) { console.log("Filosofi:", e.message); }
-
-  return results;
 }
 
 // ── Géolocalisation API Adresse gouv.fr ───────────────────
