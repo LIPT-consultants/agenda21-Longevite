@@ -19,38 +19,65 @@ exports.handler = async function(event) {
       }
     }
 
-    // 1. API Geo (fonctionne)
+    // 1. API Geo gouv.fr (fiable, sans auth)
     try {
-      const rGeo = await fetch("https://geo.api.gouv.fr/communes/" + citycode + "?fields=nom,population,codeDepartement,codeRegion,epci");
+      const rGeo = await fetch("https://geo.api.gouv.fr/communes/"+citycode+"?fields=nom,population,codeDepartement,codeRegion,epci,superficie");
       if (rGeo.ok) {
         const dGeo = await rGeo.json();
-        if (dGeo.population) results["_meta_population"] = { valeur: String(dGeo.population), source:"API Geo gouv.fr", niveau:"commune" };
-        if (dGeo.epci) results["_meta_epci"] = { valeur: typeof dGeo.epci === "object" ? (dGeo.epci.nom || JSON.stringify(dGeo.epci)) : String(dGeo.epci), source:"API Geo gouv.fr", niveau:"epci" };
+        if (dGeo.population) {
+          results["_meta_population"] = { valeur: String(dGeo.population), source:"API Geo gouv.fr", niveau:"commune" };
+        }
+        if (dGeo.epci) {
+          const epciNom = typeof dGeo.epci === "object" ? (dGeo.epci.nom || dGeo.epci.code || "EPCI") : String(dGeo.epci);
+          results["_meta_epci"] = { valeur: epciNom, source:"API Geo gouv.fr", niveau:"epci" };
+        }
+        if (dGeo.codeDepartement) {
+          results["_meta_departement"] = { valeur:"Département "+dGeo.codeDepartement, source:"API Geo gouv.fr", niveau:"departement" };
+        }
+        // Densité seniors approx depuis population (benchmark national 8.5% de 75+)
+        if (dGeo.population) {
+          results["_meta_pop_seniors_estime"] = { valeur:"Population totale "+dGeo.population+" hab. (seniors 75+ estimés : "+Math.round(dGeo.population*0.085)+")", source:"API Geo + benchmark national INSEE 2023", niveau:"commune" };
+        }
       }
     } catch(e) { console.log("Geo error:", e.message); }
 
-    // 2. Georisques (fonctionne)
+    // 2. Georisques (fiable, sans auth)
     try {
       if (lat && lon) {
-        const rGR = await fetch("https://georisques.gouv.fr/api/v1/gaspar/risques?rayon=1000&latlon="+lon+","+lat+"&page=1&page_size=10");
+        const rGR = await fetch("https://georisques.gouv.fr/api/v1/gaspar/risques?rayon=1000&latlon="+lon+","+lat+"&page=1&page_size=20");
         console.log("Georisques status:", rGR.status);
         if (rGR.ok) {
           const dGR = await rGR.json();
           if (dGR && dGR.data && dGR.data.length > 0) {
             const risques = dGR.data.map(function(r){return r.libelle_risque_jo||r.code_risque;}).filter(Boolean);
-            results["_meta_georisques"] = { valeur:"Risques : "+risques.slice(0,4).join(", "), source:"Georisques 2026", niveau:"commune" };
+            results["_meta_georisques"] = { valeur:"Risques identifiés : "+risques.slice(0,5).join(", "), source:"Georisques 2026", niveau:"adresse" };
             const hasInondation = risques.some(function(r){return r.toLowerCase().includes("inond");});
-            if (hasInondation) set("te5", 40, "Georisques - risque inondation", "commune");
+            const hasChaleur = risques.some(function(r){return r.toLowerCase().includes("chaleur")||r.toLowerCase().includes("canicule");});
+            if (hasInondation) set("te5", 45, "Georisques 2026 — zone inondable", "adresse");
+            if (hasChaleur) set("te5", 60, "Georisques 2026 — risque chaleur", "adresse");
+          } else {
+            results["_meta_georisques"] = { valeur:"Aucun risque majeur identifié dans un rayon de 1km", source:"Georisques 2026", niveau:"adresse" };
           }
         }
       }
     } catch(e) { console.log("Georisques error:", e.message); }
 
-    // 3. ADEME DPE — URL corrigée
+    // 3. API Decoupage administratif — departement
     try {
-      const urlDpe = "https://data.ademe.fr/data-fair/api/v1/datasets/dpe-v2-logements-existants/lines?size=500&qs=nom_commune_ban:\""+encodeURIComponent(city)+"\"&select=etiquette_dpe,classe_altitude";
-      const rDpe = await fetch(urlDpe, { headers:{ "x-apikey":"" } });
-      console.log("ADEME DPE status:", rDpe.status);
+      const rDept = await fetch("https://geo.api.gouv.fr/communes/"+citycode+"/departement");
+      if (rDept.ok) {
+        const dDept = await rDept.json();
+        if (dDept && dDept.nom) {
+          results["_meta_dept_nom"] = { valeur:dDept.nom+" ("+dDept.code+")", source:"API Geo gouv.fr", niveau:"departement" };
+        }
+      }
+    } catch(e) {}
+
+    // 4. ADEME DPE — endpoint stable
+    try {
+      const urlDpe = "https://data.ademe.fr/data-fair/api/v1/datasets/dpe-v2-logements-existants/lines?size=1000&q="+encodeURIComponent(city)+"&select=etiquette_dpe&q_fields=nom_commune_ban";
+      const rDpe = await fetch(urlDpe);
+      console.log("ADEME DPE status:", rDpe.status, urlDpe);
       if (rDpe.ok) {
         const dDpe = await rDpe.json();
         if (dDpe.results && dDpe.results.length > 0) {
@@ -59,93 +86,87 @@ exports.handler = async function(event) {
             if (["E","F","G"].includes(r.etiquette_dpe)) efg++;
             if (["A","B","C"].includes(r.etiquette_dpe)) renove++;
           });
-          set("te1", efg/total*100, "ADEME DPE 2025", "commune");
-          set("te2", renove/total*100, "ADEME DPE 2025", "commune");
-          results["_meta_dpe"] = { valeur: total+" DPE analysés : "+Math.round(efg/total*100)+"% EFG, "+Math.round(renove/total*100)+"% ABC", source:"ADEME Observatoire DPE 2025", niveau:"commune" };
+          set("te1", efg/total*100, "ADEME DPE 2025 — commune", "commune");
+          set("te2", renove/total*100, "ADEME DPE 2025 — commune", "commune");
+          results["_meta_dpe"] = { valeur:total+" DPE : "+Math.round(efg/total*100)+"% énergivores (EFG), "+Math.round(renove/total*100)+"% performants (ABC)", source:"ADEME Observatoire DPE 2025", niveau:"commune" };
+        }
+      } else {
+        // Essai avec l'autre dataset DPE
+        const urlDpe2 = "https://data.ademe.fr/data-fair/api/v1/datasets/dpe-v2-logements-neufs/lines?size=500&q="+encodeURIComponent(city)+"&select=etiquette_dpe&q_fields=nom_commune_ban";
+        const rDpe2 = await fetch(urlDpe2);
+        console.log("ADEME DPE2 status:", rDpe2.status);
+        if (rDpe2.ok) {
+          const dDpe2 = await rDpe2.json();
+          if (dDpe2.results && dDpe2.results.length > 0) {
+            let total=dDpe2.results.length, efg=0, renove=0;
+            dDpe2.results.forEach(function(r){
+              if(["E","F","G"].includes(r.etiquette_dpe)) efg++;
+              if(["A","B","C"].includes(r.etiquette_dpe)) renove++;
+            });
+            set("te1", efg/total*100, "ADEME DPE logements neufs 2025", "commune");
+            set("te2", renove/total*100, "ADEME DPE logements neufs 2025", "commune");
+          }
         }
       }
     } catch(e) { console.log("ADEME error:", e.message); }
 
-    // 4. INSEE - données communales via API Decoupage
+    // 5. RPLS via data.gouv.fr API tabular
     try {
-      const rPop = await fetch("https://geo.api.gouv.fr/communes/"+citycode+"/departement");
-      if (rPop.ok) {
-        const dPop = await rPop.json();
-        if (dPop && dPop.code) {
-          results["_meta_departement"] = { valeur:"Département "+dPop.code+" — "+dPop.nom, source:"API Geo gouv.fr", niveau:"departement" };
-        }
-      }
-    } catch(e) {}
-
-    // 5. BPE via API Carto INSEE
-    try {
-      const urlBpe = "https://apicarto.ign.fr/api/codes-postaux/communes/"+citycode;
-      const rBpe = await fetch(urlBpe);
-      console.log("BPE/Carto status:", rBpe.status);
-    } catch(e) { console.log("BPE error:", e.message); }
-
-    // 6. RPLS via data.gouv.fr — URL corrigée
-    try {
-      const urlRpls = "https://tabular-api.data.gouv.fr/api/resources/dc80e171-5a8b-4bca-9a5e-a77be600545e/data/?commune_code="+citycode+"&page_size=1";
+      const urlRpls = "https://tabular-api.data.gouv.fr/api/resources/dc80e171-5a8b-4bca-9a5e-a77be600545e/data/?code_commune="+citycode+"&page_size=1";
       const rRpls = await fetch(urlRpls);
-      console.log("RPLS status:", rRpls.status);
+      console.log("RPLS tabular status:", rRpls.status);
       if (rRpls.ok) {
         const dRpls = await rRpls.json();
-        if (dRpls.meta && dRpls.meta.total > 0) {
-          results["_meta_rpls"] = { valeur: dRpls.meta.total+" logements sociaux recensés dans la commune", source:"RPLS 2023 — data.gouv.fr", niveau:"commune" };
+        if (dRpls && dRpls.meta && dRpls.meta.total > 0) {
+          results["_meta_rpls"] = { valeur:dRpls.meta.total+" logements sociaux recensés", source:"RPLS 2023 — data.gouv.fr", niveau:"commune" };
         }
       }
     } catch(e) { console.log("RPLS error:", e.message); }
 
-    // 7. Filosofi via API INSEE Open Data
+    // 6. BPE via data.gouv.fr
     try {
-      const urlFilo = "https://data.insee.fr/api/donnees-locales/V0.1/donnees/geo-INDIC@FILOSOFI2020/COM-"+citycode+".all";
-      const rFilo = await fetch(urlFilo, {
-        headers:{ Accept:"application/json", "User-Agent":"Agenda21Longevite/1.0" }
-      });
-      console.log("Filosofi status:", rFilo.status);
-      if (rFilo.ok) {
-        const dFilo = await rFilo.json();
-        if (dFilo && dFilo.Cellule) {
-          dFilo.Cellule.forEach(function(c) {
-            const indic = (c.Modalite||[]).find(function(m){return m["@variable"]==="INDIC";});
-            if (!indic) return;
-            const val = parseFloat(c.Valeur);
-            if (indic["@code"]==="TP60" && !isNaN(val)) set("v14", val/100*0.35, "INSEE Filosofi 2020 — proxy taux effort", "commune");
-            if (indic["@code"]==="MED21" && !isNaN(val)) results["_meta_revenu"] = { valeur: Math.round(val)+" euros/an", source:"INSEE Filosofi 2020 — revenu median", niveau:"commune" };
+      const urlBpe = "https://tabular-api.data.gouv.fr/api/resources/c78a5025-e9d1-4e97-820d-a3e3deef5016/data/?depcom="+citycode+"&page_size=100";
+      const rBpe = await fetch(urlBpe);
+      console.log("BPE tabular status:", rBpe.status);
+      if (rBpe.ok) {
+        const dBpe = await rBpe.json();
+        if (dBpe && dBpe.data && dBpe.data.length > 0) {
+          let medecins=0, pharmacies=0, ehpad=0, services=0;
+          dBpe.data.forEach(function(r) {
+            const typequ = r.typequ || r.TYPEQU || "";
+            if (typequ==="D201") medecins++;
+            if (typequ==="D401") pharmacies++;
+            if (["D109","D110"].includes(typequ)) ehpad++;
+            if (typequ==="D107") services++;
           });
+          const partenaires = (medecins>0?1:0)+(ehpad>0?2:0)+(services>0?2:0)+(pharmacies>0?1:0);
+          if (partenaires > 0) set("pt1", partenaires, "INSEE BPE 2023 — data.gouv.fr", "commune");
+          results["_meta_bpe"] = { valeur:medecins+" médecins, "+pharmacies+" pharmacies, "+ehpad+" EHPAD/résidences autonomie", source:"INSEE BPE 2023", niveau:"commune" };
         }
       }
-    } catch(e) { console.log("Filosofi error:", e.message); }
+    } catch(e) { console.log("BPE error:", e.message); }
 
-    // 8. INSEE Recensement via API Donnees Locales
+    // 7. Filosofi via data.gouv.fr
     try {
-      const urlRp = "https://api.insee.fr/donnees-locales/V0.1/donnees/geo-SEXE-AGE15_15_90@GEO2023RP2020/COM-"+citycode+".all.all";
-      const rRp = await fetch(urlRp, {
-        headers:{ Accept:"application/json", "Authorization":"Bearer anonymous" }
-      });
-      console.log("INSEE RP status:", rRp.status);
-      if (rRp.ok) {
-        const dPop = await rRp.json();
-        if (dPop && dPop.Cellule) {
-          let total=0, s60=0, s75=0, s85=0;
-          dPop.Cellule.forEach(function(c) {
-            const age = (c.Modalite||[]).find(function(m){return m["@variable"]==="AGE15_15_90";});
-            const v = parseFloat(c.Valeur||0);
-            if (!age) return;
-            total += v;
-            if (["60-74","75-89","90+"].includes(age["@code"])) s60+=v;
-            if (["75-89","90+"].includes(age["@code"])) s75+=v;
-            if (age["@code"]==="90+") s85+=v;
-          });
-          if (total>0) {
-            set("v1", s60/total*100, "INSEE RP 2020", "commune");
-            set("v2", s75/total*100, "INSEE RP 2020", "commune");
-            set("v3", s85/total*100, "INSEE RP 2020", "commune");
+      const urlFilo = "https://tabular-api.data.gouv.fr/api/resources/b78253ce-4f39-4a23-bcfd-a5b5e48dd5e3/data/?codgeo="+citycode+"&page_size=1";
+      const rFilo = await fetch(urlFilo);
+      console.log("Filosofi tabular status:", rFilo.status);
+      if (rFilo.ok) {
+        const dFilo = await rFilo.json();
+        if (dFilo && dFilo.data && dFilo.data.length > 0) {
+          const row = dFilo.data[0];
+          const tp60 = parseFloat(row.tp60 || row.TP60 || 0);
+          const med = parseFloat(row.med21 || row.MED21 || 0);
+          if (!isNaN(tp60) && tp60 > 0) {
+            set("v14", tp60/100*0.35, "INSEE Filosofi 2020 — taux pauvreté commune (proxy)", "commune");
+            results["_meta_pauvrete"] = { valeur:"Taux de pauvreté : "+tp60+"%", source:"INSEE Filosofi 2020", niveau:"commune" };
+          }
+          if (!isNaN(med) && med > 0) {
+            results["_meta_revenu"] = { valeur:Math.round(med)+" €/an (revenu médian)", source:"INSEE Filosofi 2020", niveau:"commune" };
           }
         }
       }
-    } catch(e) { console.log("INSEE RP error:", e.message); }
+    } catch(e) { console.log("Filosofi error:", e.message); }
 
     console.log("Resultats finaux:", Object.keys(results));
     return { statusCode:200, headers, body:JSON.stringify(results) };
