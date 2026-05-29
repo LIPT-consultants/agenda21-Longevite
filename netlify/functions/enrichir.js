@@ -25,7 +25,7 @@ exports.handler = async function(event) {
       if (rGeo.ok) {
         const dGeo = await rGeo.json();
         if (dGeo.population) results["_meta_population"] = { valeur: String(dGeo.population), source:"API Géo", niveau:"commune" };
-        if (dGeo.epci) results["_meta_epci"] = { valeur: typeof dGeo.epci === "object" ? (dGeo.epci.nom || JSON.stringify(dGeo.epci)) : String(dGeo.epci), source:"API Géo", niveau:"epci" };
+        if (dGeo.epci) results["_meta_epci"] = { valeur: dGeo.epci, source:"API Géo", niveau:"epci" };
       }
     } catch(e) {}
 
@@ -33,6 +33,7 @@ exports.handler = async function(event) {
     try {
       const urlDpe = `https://data.ademe.fr/data-fair/api/v1/datasets/dpe-v2-logements-existants/lines?size=500&q=${encodeURIComponent(city)}&q_fields=nom_commune_ban&select=etiquette_dpe`;
       const rDpe = await fetch(urlDpe);
+      console.log("ADEME DPE status:", rDpe.status);
       if (rDpe.ok) {
         const dDpe = await rDpe.json();
         if (dDpe.results && dDpe.results.length > 0) {
@@ -51,7 +52,7 @@ exports.handler = async function(event) {
     try {
       const urlBpe = `https://data.insee.fr/api/donnees-locales/V0.1/donnees/geo-TYPEQU@BPE2021/COM-${citycode}.all`;
       const rBpe = await fetch(urlBpe, { headers:{ Accept:"application/json" } });
-      if (rBpe.ok) {
+      console.log("BPE status:", rBpe.status);
         const dBpe = await rBpe.json();
         if (dBpe && dBpe.Cellule) {
           let medecins=0, ehpad=0, services=0, pharmacies=0, infirmiers=0;
