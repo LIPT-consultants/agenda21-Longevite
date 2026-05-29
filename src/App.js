@@ -570,22 +570,18 @@ Produis une analyse structurée en 4 parties :
 
 Sois précis, actionnable et ancré dans les meilleures pratiques du secteur HLM. Utilise des données chiffrées issues des sources listées.`;
 
-    try {
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
-        method:"POST",
-        headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({
-          model:"claude-sonnet-4-20250514",
-          max_tokens:1000,
-          messages:[{role:"user",content:prompt}],
-        }),
-      });
-      const data = await response.json();
-      const text = (data.content||[]).map(function(b){return b.text||"";}).join("\n");
-      setResult(text);
-    } catch(e) {
-      setResult("Erreur lors de l'analyse. Vérifiez votre connexion.");
-    }
+   try {
+  const response = await fetch("/.netlify/functions/analyse", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt }),
+  });
+  const data = await response.json();
+  const text = data.text || "Erreur lors de l'analyse.";
+  setResult(text);
+} catch(e) {
+  setResult("Erreur lors de l'analyse. Vérifiez votre connexion.");
+}
     setLoading(false);
   }
 
