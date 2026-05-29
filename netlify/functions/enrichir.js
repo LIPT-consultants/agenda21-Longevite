@@ -25,7 +25,7 @@ exports.handler = async function(event) {
       if (rGeo.ok) {
         const dGeo = await rGeo.json();
         if (dGeo.population) results["_meta_population"] = { valeur: String(dGeo.population), source:"API Géo", niveau:"commune" };
-        if (dGeo.epci) results["_meta_epci"] = { valeur: dGeo.epci, source:"API Géo", niveau:"epci" };
+        if (dGeo.epci) results["_meta_epci"] = { valeur: typeof dGeo.epci === "object" ? (dGeo.epci.nom || JSON.stringify(dGeo.epci)) : String(dGeo.epci), source:"API Géo", niveau:"epci" };
       }
     } catch(e) {}
 
