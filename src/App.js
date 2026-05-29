@@ -827,8 +827,6 @@ function ViewConfig({ dossier, onSave }) {
       setEnrichResult({ error: "Erreur lors de l'enrichissement : " + e.message });
     }
     setEnrichLoading(false);
-  }
-
   return (
     <div>
       <h2 style={{fontSize:16,fontWeight:500,marginBottom:4}}>Configuration — {dossier.nom}</h2>
