@@ -244,10 +244,15 @@ const statutCfg = {
 
 // ── Storage ───────────────────────────────────────────────
 async function loadData(key) {
-  try { const r = await window.storage.get(key); return r ? JSON.parse(r.value) : null; } catch(e) { return null; }
+  try {
+    const val = localStorage.getItem(key);
+    return val ? JSON.parse(val) : null;
+  } catch(e) { return null; }
 }
 async function saveData(key, val) {
-  try { await window.storage.set(key, JSON.stringify(val)); } catch(e) {}
+  try {
+    localStorage.setItem(key, JSON.stringify(val));
+  } catch(e) {}
 }
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2,6); }
 
