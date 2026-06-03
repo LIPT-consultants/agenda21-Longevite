@@ -257,7 +257,7 @@ function uid() { return Date.now().toString(36) + Math.random().toString(36).sli
 async function enrichirDepuisAPIs(adresse) {
   if (!adresse || !adresse.citycode) return {};
   try {
-    const response = await fetch("/.netlify/functions/enrichir", {
+    const response = await fetch("agenda21-backend-production.up.railway.app/api/enrichir", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
